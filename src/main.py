@@ -73,16 +73,20 @@ _state: dict = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("Loading ML artifacts …")
+    print(f"Loading ML artifacts from {MODELS_DIR} …")
+    print(f"  Directory exists: {MODELS_DIR.exists()}")
+    if MODELS_DIR.exists():
+        print(f"  Contents: {[f.name for f in MODELS_DIR.iterdir()]}")
 
     # Model
+    model_path = MODELS_DIR / "lazuli_bunting_xgboost.json"
     model = xgb.XGBClassifier()
     try:
-        model.load_model(str(MODELS_DIR / "lazuli_bunting_xgboost.json"))
+        model.load_model(str(model_path))
         _state["model"] = model
         print("  XGBoost model loaded.")
     except Exception as exc:
-        print(f"  ERROR loading model: {exc}")
+        print(f"  ERROR loading model ({model_path}): {exc}")
 
     # Locality profiles
     profiles_path = MODELS_DIR / "locality_profiles.parquet"
@@ -90,7 +94,7 @@ async def lifespan(app: FastAPI):
         _state["profiles"] = pd.read_parquet(str(profiles_path))
         print(f"  {len(_state['profiles']):,} locality profiles loaded.")
     except Exception as exc:
-        print(f"  ERROR loading profiles: {exc}")
+        print(f"  ERROR loading profiles ({profiles_path}): {exc}")
 
     # Metadata
     meta_path = MODELS_DIR / "metadata.json"

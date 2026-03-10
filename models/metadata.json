@@ -1,0 +1,23 @@
+{
+  "features": [
+    "latitude",
+    "longitude",
+    "month_sin",
+    "month_cos",
+    "lat_x_month_sin",
+    "lat_x_month_cos",
+    "lon_x_month_sin",
+    "lon_x_month_cos",
+    "months_from_peak",
+    "season_margin",
+    "locality_total_sightings",
+    "locality_mean_count",
+    "years_observed",
+    "n_months_with_sightings",
+    "sighting_frequency",
+    "county_sighting_density",
+    "state_sighting_density"
+  ],
+  "optimal_threshold": 0.5433393716812134,
+  "n_localities": 89501
+}
