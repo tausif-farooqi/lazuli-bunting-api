@@ -19,8 +19,10 @@ import json
 import os
 import re
 import sys
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -89,6 +91,8 @@ def slugify(name: str) -> str:
 # ---------------------------------------------------------------------------
 
 _state: dict = {}
+_top_parks_cache: dict[str, Any] = {"data": None, "fetched_at": 0.0}
+TOP_PARKS_TTL_SECONDS = 24 * 60 * 60  # 24 hours
 
 
 @asynccontextmanager
@@ -321,6 +325,25 @@ def get_county_stats(
         raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
     rows = response.data or []
     return [{"county": row.get("county"), "total_sightings": row.get("total_sightings")} for row in rows]
+
+
+@app.get("/api/stats/topparks")
+def get_top_parks() -> list[dict[str, Any]]:
+    """Returns the top 20 parks for Lazuli Bunting sightings. Results are cached for 24 hours."""
+    now = time.time()
+    if _top_parks_cache["data"] is not None and (now - _top_parks_cache["fetched_at"]) < TOP_PARKS_TTL_SECONDS:
+        return _top_parks_cache["data"]
+
+    supabase = _get_supabase()
+    try:
+        response = supabase.rpc("get_top_20_parks").execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
+
+    rows = response.data or []
+    _top_parks_cache["data"] = rows
+    _top_parks_cache["fetched_at"] = now
+    return rows
 
 
 @app.get("/health", include_in_schema=False)
