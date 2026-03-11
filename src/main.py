@@ -29,6 +29,19 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from supabase import create_client, Client
+
+# Avoid PermissionError on Windows: Python's ssl module (used by httpx/Supabase)
+# sets keylog_filename when SSLKEYLOGFILE is set, which can point at an unwritable path.
+os.environ.pop("SSLKEYLOGFILE", None)
+
+# Optional: use a writable cwd on Windows for libs that write to the current dir.
+if os.name == "nt":
+    _safe_cwd = os.environ.get("TEMP") or os.path.expanduser("~")
+    try:
+        os.chdir(_safe_cwd)
+    except OSError:
+        pass
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT_DIR / "src"))
@@ -44,6 +57,13 @@ EARTH_RADIUS_MILES = 3_958.8
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _get_supabase() -> Client:
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_SERVICE_KEY") or os.environ.get("SUPABASE_ANON_KEY")
+    if not url or not key:
+        raise ValueError("SUPABASE_URL and SUPABASE_ANON_KEY must be set in .env")
+    return create_client(url, key)
 
 def haversine_miles(
     lat1: float, lon1: float,
@@ -260,6 +280,47 @@ async def get_predictions(
         )
 
     return results
+
+@app.get("/api/stats/annualsummary")
+def get_annual_summary() -> list[dict[str, Any]]:
+    """Returns yearly sighting totals. No parameters. Calls get_annual_sightings_summary()."""
+    supabase = _get_supabase()
+    try:
+        response = supabase.rpc("get_annual_sightings_summary").execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
+    rows = response.data or []
+    return [{"obs_year": row.get("obs_year"), "total_sightings": row.get("total_sightings")} for row in rows]
+
+
+@app.get("/api/stats/state")
+def get_state_stats(year: int = Query(..., description="Year (e.g. 2024)")) -> list[dict[str, Any]]:
+    """Returns state-level sighting counts for the given year. Calls get_state_stats_by_year()."""
+    supabase = _get_supabase()
+    try:
+        response = supabase.rpc("get_state_stats_by_year", {"target_year": year}).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
+    rows = response.data or []
+    return [{"state": row.get("state"), "total_sightings": row.get("total_sightings")} for row in rows]
+
+
+@app.get("/api/stats/counties")
+def get_county_stats(
+    state: str = Query(..., description="State code or name (e.g. CA)"),
+    year: int = Query(..., description="Year (e.g. 2024)"),
+) -> list[dict[str, Any]]:
+    """Returns county-level sighting counts for the given state and year. Calls get_county_stats_by_state_year()."""
+    supabase = _get_supabase()
+    try:
+        response = supabase.rpc(
+            "get_county_stats_by_state_year",
+            {"target_state": state, "target_year": year},
+        ).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
+    rows = response.data or []
+    return [{"county": row.get("county"), "total_sightings": row.get("total_sightings")} for row in rows]
 
 
 @app.get("/health", include_in_schema=False)
