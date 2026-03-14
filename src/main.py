@@ -17,21 +17,28 @@ from __future__ import annotations
 
 import json
 import os
+import httpx
+import asyncio
 import re
 import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Dict, Any, List
+from collections import defaultdict
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
 import xgboost as xgb
+import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from supabase import create_client, Client
+from collections import defaultdict
+from cachetools import TTLCache
 
 # Avoid PermissionError on Windows: Python's ssl module (used by httpx/Supabase)
 # sets keylog_filename when SSLKEYLOGFILE is set, which can point at an unwritable path.
@@ -345,6 +352,110 @@ def get_top_parks() -> list[dict[str, Any]]:
     _top_parks_cache["fetched_at"] = now
     return rows
 
+EBIRD_API_KEY = os.environ.get("EBIRD_API_KEY")
+
+# Cache up to 20 different "days_back" variations for 10 minutes (600 seconds)
+# This prevents slamming the eBird API on every page refresh.
+live_sightings_cache = TTLCache(maxsize=20, ttl=600)
+
+@app.get("/api/live-sightings")
+async def get_live_sightings(days_back: int = Query(7, ge=1, le=30)):
+    """
+    Optimized Live Feed with Async I/O and TTL Caching.
+    """
+    # 1. Check Cache First
+    if days_back in live_sightings_cache:
+        print(f"serving days_back={days_back} from cache")
+        return live_sightings_cache[days_back]
+
+    # 2. Fetch from eBird (Non-blocking Async call)
+    ebird_url = "https://api.ebird.org/v2/data/obs/US/recent/lazbun"
+    params = {"back": days_back, "key": EBIRD_API_KEY}
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(ebird_url, params=params, timeout=10.0)
+            response.raise_for_status()
+            ebird_data = response.json()
+        except Exception as e:
+            print(f"eBird Error: {e}")
+            raise HTTPException(status_code=503, detail="eBird service unavailable")
+
+    if not ebird_data:
+        empty_res = {"message": "No sightings found.", "data": {}}
+        live_sightings_cache[days_back] = empty_res
+        return empty_res
+
+    # 3. Prepare Batch Lookup for Supabase
+    unique_localities = list(set([obs['locName'] for obs in ebird_data]))
+    supabase = _get_supabase()
+
+    # 4. Query Supabase (Materialized View)
+    # Note: supabase-py is sync, but we use a list of localities to minimize DB roundtrips
+    try:
+        meta_response = supabase.table("mv_park_metadata") \
+            .select("locality, state, county") \
+            .in_("locality", unique_localities) \
+            .execute()
+        
+        meta_lookup = {row['locality']: row for row in meta_response.data}
+    except Exception as e:
+        print(f"Supabase Lookup Error: {e}")
+        meta_lookup = {}
+
+    # 5. Aggregate and Enrich
+    aggregator: Dict[tuple, Dict[str, Any]] = {}
+
+    for obs in ebird_data:
+        loc = obs.get('locName')
+        # Clean date to YYYY-MM-DD
+        date_raw = obs.get('obsDt', '')
+        date_only = date_raw.split(' ')[0] if date_raw else "Unknown"
+        
+        meta = meta_lookup.get(loc, {})
+        state = meta.get('state') or obs.get('subnational1Code', '').split('-')[-1]
+        county = meta.get('county') or "Unknown County"
+        
+        key = (state, loc, date_only)
+        count = obs.get('howMany', 1)
+        sub_id = obs.get('subId')
+
+        if key in aggregator:
+            aggregator[key]['count'] += count
+            if sub_id not in aggregator[key]['subIds']:
+                aggregator[key]['subIds'].append(sub_id)
+        else:
+            aggregator[key] = {
+                "location": loc,
+                "county": county,
+                "state": state,
+                "count": count,
+                "date": date_only,
+                "subIds": [sub_id] if sub_id else []
+            }
+
+    # 6. Final State Grouping
+    final_data = defaultdict(list)
+    for entry in aggregator.values():
+        final_data[entry['state']].append(entry)
+
+    # Sort sightings within each state by date
+    for state in final_data:
+        final_data[state].sort(key=lambda x: x['date'], reverse=True)
+
+    result = {
+        "metadata": {
+            "days_back": days_back,
+            "cached": False,
+            "generated_at": datetime.now().isoformat()
+        },
+        "data": dict(final_data)
+    }
+
+    # 7. Store in Cache for next 10 minutes
+    live_sightings_cache[days_back] = result
+    
+    return result
 
 @app.get("/health", include_in_schema=False)
 async def health():
