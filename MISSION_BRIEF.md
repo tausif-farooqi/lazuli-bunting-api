@@ -23,3 +23,20 @@ Create APIs that return intersting stats from our 10-year eBird database.
 - [x] **Task 1: The 5th Endpoint.** Create a `GET /api/stats/topparks` endpoint. It does not require any parameter.
 - [x] **Task 2: Database Call.** Inside the endpoint above, call the Supabase RPC `get_top_20_parks()`.
 - [x] **Task 3: Caching.** Since this data doesn't really change, cache the results for 24 hours.
+
+### Phase 4: Backend Modularization & Structural Refactoring
+- [x] **Task 1: Establish Directory Hierarchy**
+    - Create the folder structure above (/api, /core, /services, /db).
+    - Move SUPABASE_URL, EBIRD_API_KEY, and other environment logic into core/config.py using pydantic-settings.
+- [x] **Task 2: Decouple the ML Engine**
+    - Move the XGBoost model loading and inference logic into services/ml_engine.py.
+    - Create api/api_v1/endpoints/predict.py to handle the POST requests, calling the service layer for the actual math.
+- [x] **Task 3: Implement APIRouters**
+    - Refactor the Live Sightings and Top Parks logic into their own router files.
+    - Note: Use router = APIRouter() in each file to keep the endpoints isolated.
+    - Update the /live endpoint to utilize a dedicated services/ebird.py for the network calls and caching logic.
+- [x] **Task 4: Centralize Database Access**
+    - Move the Supabase client initialization into db/supabase_client.py.
+    - Ensure all endpoints import the client from this single source of truth to prevent multiple redundant connections.
+- [x] **Task 5: Main Entry Point Cleanup**
+    - Strip main.py down to the bare essentials: FastAPI initialization, CORS middleware, and a single app.include_router(api_router) call.
